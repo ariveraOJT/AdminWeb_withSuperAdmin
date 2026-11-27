@@ -21,3 +21,4 @@ export default function ProfileAvatar({ src, name, className = '' }) {
     </span>
   );
 }
+

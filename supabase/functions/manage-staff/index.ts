@@ -16,6 +16,35 @@ const STAFF_ROLES = [
   'school_president',
 ];
 const SECTION_ROLES = new Set(['adviser', 'principal', 'ministrong_tagasubaybay']);
+const RESTORABLE_SEED_ACCOUNTS = [
+  { name: 'Atty. Roberto Mendoza', email: 'osd@hayag.edu.ph', role: 'osd', assigned_section: 'All Sections (Campus-wide)' },
+  { name: 'Gng. Corazon Alcantara', email: 'ministro@hayag.edu.ph', role: 'ministrong_tagasubaybay', assigned_section: 'Junior & Senior High School' },
+  { name: 'Ms. Clara Mahogany', email: 'adviser.grade-7-mahogany@hayag.edu.ph', role: 'adviser', assigned_section: 'Grade 7 - Mahogany' },
+  { name: 'Mr. Dennis Narra', email: 'adviser.grade-7-narra@hayag.edu.ph', role: 'adviser', assigned_section: 'Grade 7 - Narra' },
+  { name: 'Ms. Elena Uranus', email: 'adviser.grade-8-uranus@hayag.edu.ph', role: 'adviser', assigned_section: 'Grade 8 - Uranus' },
+  { name: 'Mr. Felix Venus', email: 'adviser.grade-8-venus@hayag.edu.ph', role: 'adviser', assigned_section: 'Grade 8 - Venus' },
+  { name: 'Ms. Grace Eagle', email: 'adviser.grade-9-eagle@hayag.edu.ph', role: 'adviser', assigned_section: 'Grade 9 - Eagle' },
+  { name: 'Mr. Henry Falcon', email: 'adviser.grade-9-falcon@hayag.edu.ph', role: 'adviser', assigned_section: 'Grade 9 - Falcon' },
+  { name: 'Ms. Iris Rizal', email: 'adviser.grade-10-rizal@hayag.edu.ph', role: 'adviser', assigned_section: 'Grade 10 - Rizal' },
+  { name: 'Mr. Jack Bonifacio', email: 'adviser.grade-10-bonifacio@hayag.edu.ph', role: 'adviser', assigned_section: 'Grade 10 - Bonifacio' },
+  { name: 'Ms. Julia Jupiter', email: 'adviser.grade-10-jupiter@hayag.edu.ph', role: 'adviser', assigned_section: 'Grade 10 - Jupiter' },
+  { name: 'Ms. Karen Stem', email: 'adviser.grade-11-stem-a@hayag.edu.ph', role: 'adviser', assigned_section: 'Grade 11 - STEM A' },
+  { name: 'Mr. Leo Abm', email: 'adviser.grade-11-abm-a@hayag.edu.ph', role: 'adviser', assigned_section: 'Grade 11 - ABM A' },
+  { name: 'Ms. Maria Stem12', email: 'adviser.grade-12-stem-a@hayag.edu.ph', role: 'adviser', assigned_section: 'Grade 12 - STEM A' },
+  { name: 'Mr. Nilo Abm12', email: 'adviser.grade-12-abm-a@hayag.edu.ph', role: 'adviser', assigned_section: 'Grade 12 - ABM A' },
+  { name: 'Gng. Corazon Alcantara', email: 'ministro.grade7@hayag.edu.ph', role: 'ministrong_tagasubaybay', assigned_section: 'Grade 7' },
+  { name: 'G. Arnel Bautista', email: 'ministro.grade8@hayag.edu.ph', role: 'ministrong_tagasubaybay', assigned_section: 'Grade 8' },
+  { name: 'Gng. Remedios Santos', email: 'ministro.grade9@hayag.edu.ph', role: 'ministrong_tagasubaybay', assigned_section: 'Grade 9' },
+  { name: 'G. Danilo Cruz', email: 'ministro.grade10@hayag.edu.ph', role: 'ministrong_tagasubaybay', assigned_section: 'Grade 10' },
+  { name: 'Gng. Jocelyn Reyes', email: 'ministro.grade11@hayag.edu.ph', role: 'ministrong_tagasubaybay', assigned_section: 'Grade 11' },
+  { name: 'G. Fernando Garcia', email: 'ministro.grade12@hayag.edu.ph', role: 'ministrong_tagasubaybay', assigned_section: 'Grade 12' },
+  { name: 'G. Renato Dalisay', email: 'osd.grade7@hayag.edu.ph', role: 'osd', assigned_section: 'Grade 7' },
+  { name: 'Gng. Teresa Mercado', email: 'osd.grade8@hayag.edu.ph', role: 'osd', assigned_section: 'Grade 8' },
+  { name: 'G. Victor Navarro', email: 'osd.grade9@hayag.edu.ph', role: 'osd', assigned_section: 'Grade 9' },
+  { name: 'Gng. Angela Pineda', email: 'osd.grade10@hayag.edu.ph', role: 'osd', assigned_section: 'Grade 10' },
+  { name: 'G. Marco Valenzuela', email: 'osd.grade11@hayag.edu.ph', role: 'osd', assigned_section: 'Grade 11' },
+  { name: 'Gng. Caridad Soriano', email: 'osd.grade12@hayag.edu.ph', role: 'osd', assigned_section: 'Grade 12' },
+];
 
 type JsonRecord = Record<string, unknown>;
 
@@ -106,6 +135,121 @@ Deno.serve(async (request) => {
     payload = parsed;
   } catch (error) {
     return jsonResponse({ error: error instanceof Error ? error.message : 'Invalid request body.' }, 400);
+  }
+
+  if (payload.action === 'restore_seed_profiles') {
+    if (!Array.isArray(payload.emails) || payload.emails.length === 0 || payload.emails.length > RESTORABLE_SEED_ACCOUNTS.length) {
+      return jsonResponse({ error: 'Choose the legacy staff accounts to restore.' }, 400);
+    }
+
+    const seedAccountsByEmail = new Map(RESTORABLE_SEED_ACCOUNTS.map((account) => [account.email, account]));
+    let emails: string[];
+    try {
+      emails = payload.emails.map((value) => {
+        const email = readText(value, 'Staff email', 320).toLowerCase();
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+          throw new Error('A legacy staff email address is invalid.');
+        }
+        if (!seedAccountsByEmail.has(email)) throw new Error('Only known legacy staff identities can be restored.');
+        return email;
+      });
+    } catch (error) {
+      return jsonResponse({ error: error instanceof Error ? error.message : 'Invalid legacy staff accounts.' }, 400);
+    }
+
+    if (new Set(emails).size !== emails.length) {
+      return jsonResponse({ error: 'A legacy staff email was included more than once.' }, 400);
+    }
+    const accounts = emails.flatMap((email) => {
+      const account = seedAccountsByEmail.get(email);
+      return account ? [account] : [];
+    });
+
+    const authUsersByEmail = new Map<string, string>();
+    const authUsersPageSize = 1000;
+    for (let page = 1; ; page += 1) {
+      const { data, error } = await adminClient.auth.admin.listUsers({
+        page,
+        perPage: authUsersPageSize,
+      });
+      if (error) {
+        console.error('Could not match legacy staff accounts to Auth users:', error);
+        return jsonResponse({ error: `Could not match legacy staff accounts to existing logins: ${error.message}` }, 500);
+      }
+      for (const authUser of data.users) {
+        if (authUser.email) authUsersByEmail.set(authUser.email.toLowerCase(), authUser.id);
+      }
+      if (data.users.length < authUsersPageSize) break;
+    }
+
+    const matchedAccounts = accounts.filter((account) => authUsersByEmail.has(account.email));
+    const existingEmails = new Set<string>();
+    if (matchedAccounts.length) {
+      const { data, error } = await adminClient
+        .from('users')
+        .select('email')
+        .in('email', matchedAccounts.map((account) => account.email));
+      if (error) {
+        console.error('Could not check for existing legacy staff profiles:', error);
+        return jsonResponse({ error: `Could not check for existing staff profiles: ${error.message}` }, 500);
+      }
+      for (const profile of data || []) {
+        if (profile.email) existingEmails.add(profile.email.toLowerCase());
+      }
+    }
+
+    const profilesToRestore = matchedAccounts.flatMap((account) => {
+      const authUserId = authUsersByEmail.get(account.email);
+      if (!authUserId || existingEmails.has(account.email)) return [];
+      return [{
+        auth_user_id: authUserId,
+        email: account.email,
+        name: account.name,
+        role: account.role,
+        assigned_section: account.assigned_section || null,
+        is_active: true,
+        must_change_password: true,
+      }];
+    });
+
+    let restoredProfiles: Array<{ id: number; email: string; role: string }> = [];
+    if (profilesToRestore.length) {
+      const { data, error } = await adminClient
+        .from('users')
+        .insert(profilesToRestore)
+        .select('id, email, role');
+      if (error) {
+        console.error('Could not restore the matching legacy staff profiles:', error);
+        return jsonResponse({ error: `Could not restore legacy staff profiles: ${error.message}` }, 500);
+      }
+      restoredProfiles = data || [];
+    }
+
+    const { error: auditError } = await adminClient.from('activity_logs').insert({
+      user_email: authData.user.email || actor.email,
+      user_role: 'super_admin',
+      action: 'STAFF_PROFILES_RESTORED',
+      entity_name: 'staff',
+      record_id: 'legacy-seed-accounts',
+      new_values: {
+        restored_count: restoredProfiles.length,
+        existing_profile_count: existingEmails.size,
+        unmatched_auth_count: accounts.length - matchedAccounts.length,
+        is_active: true,
+      },
+    });
+    if (auditError) {
+      console.error('Legacy staff profiles were restored but the activity could not be recorded:', auditError);
+    }
+
+    return jsonResponse({
+      restored_count: restoredProfiles.length,
+      existing_profile_count: existingEmails.size,
+      unmatched_auth_count: accounts.length - matchedAccounts.length,
+      auditWarning: auditError
+        ? 'Profiles were restored, but the activity could not be recorded. Notify the system administrator.'
+        : undefined,
+    });
   }
 
   if (payload.action === 'list') {
@@ -305,6 +449,50 @@ temporaryPassword = payload.temporaryPassword;
         ? 'Account created, but the activity could not be recorded. Notify the system administrator.'
         : undefined,
     }, 201);
+  }
+
+  if (payload.action === 'update') {
+    const profileId = Number(payload.profileId);
+    if (!Number.isSafeInteger(profileId) || profileId < 1) {
+      return jsonResponse({ error: 'Choose a valid staff account.' }, 400);
+    }
+
+    let role: string;
+    let sectionIds: string[];
+    let assignedScope: string;
+    try {
+      role = readText(payload.role, 'Staff position', 50);
+      if (!STAFF_ROLES.includes(role)) throw new Error('Choose a supported staff position.');
+      sectionIds = readSectionIds(payload.sectionIds);
+      if (sectionIds.length > 100) throw new Error('Choose no more than 100 sections.');
+      if (SECTION_ROLES.has(role) && sectionIds.length === 0) {
+        throw new Error('Choose at least one section for this position.');
+      }
+      if (!SECTION_ROLES.has(role) && sectionIds.length > 0) {
+        throw new Error('This position does not use section assignments.');
+      }
+      assignedScope = typeof payload.assignedScope === 'string' ? payload.assignedScope.trim() : '';
+      if (assignedScope.length > 150) {
+        throw new Error('Assigned section or scope must be 150 characters or fewer.');
+      }
+    } catch (error) {
+      return jsonResponse({ error: error instanceof Error ? error.message : 'Invalid staff changes.' }, 400);
+    }
+
+    const { error: updateError } = await adminClient.rpc('update_staff_profile', {
+      p_profile_id: profileId,
+      p_role: role,
+      p_assigned_scope: assignedScope,
+      p_section_ids: sectionIds,
+      p_actor_email: authData.user.email || actor.email,
+    });
+    if (updateError) {
+      console.error('Could not update the staff profile:', updateError);
+      const status = updateError.code === 'P0002' ? 404 : 400;
+      return jsonResponse({ error: `Could not update the staff profile: ${updateError.message}` }, status);
+    }
+
+    return jsonResponse({ updated: true });
   }
 
   if (payload.action === 'deactivate') {

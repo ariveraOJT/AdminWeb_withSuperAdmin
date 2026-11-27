@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  Check, Clipboard, Database, Download, Eye, EyeOff, History, KeyRound, Loader2,
+  Check, Clipboard, Database, Download, Eye, EyeOff, History, KeyRound, Loader2, Pencil,
   RefreshCw, Search, Shield, Shuffle, UserPlus, UserX,
 } from 'lucide-react';
 import ConfirmDialog from '../components/common/ConfirmDialog';
+import Modal from '../components/common/Modal';
 import { useAuth } from '../context/AuthContext';
 import { INITIAL_USERS } from '../data/initialSeedData';
 import { supabase } from '../lib/supabaseClient';
@@ -57,9 +58,19 @@ const getSectionLabel = (section) => (
   section.full_section_name || `${section.grade || section.grade_level} - ${section.section_name || section.name}`
 );
 
-const getStaffSections = (staff) => (staff.staff_section_assignments || [])
-  .filter((assignment) => assignment.is_active !== false && (assignment.school_sections || assignment.sections))
-  .map((assignment) => getSectionLabel(assignment.school_sections || assignment.sections));
+const getStaffSections = (staff) => {
+  const linkedSections = (staff.staff_section_assignments || [])
+    .filter((assignment) => assignment.is_active !== false && (assignment.school_sections || assignment.sections))
+    .map((assignment) => getSectionLabel(assignment.school_sections || assignment.sections));
+  const storedSections = String(staff.assigned_section || '')
+    .split(',')
+    .map((section) => section.trim())
+    .filter(Boolean);
+
+  return [...new Map(
+    [...linkedSections, ...storedSections].map((section) => [section.toLowerCase(), section]),
+  ).values()];
+};
 
 const getRoleLabel = (roleValue) => (
   STAFF_ROLES.find((staffRole) => staffRole.value === roleValue)?.label || roleValue
@@ -342,7 +353,7 @@ function StaffRow({ account, inactive, isDeactivating, onDeactivate }) {
 }
 
 
-function StaffList({ accounts, inactive, isSearching, deactivatingId, onDeactivate }) {
+function StaffList({ accounts, inactive, isSearching, deactivatingId, updatingId, onEdit, onDeactivate }) {
   if (!accounts.length) {
     return (
       <p className="rounded-lg border border-dashed border-slate-300 p-5 text-sm text-slate-500 dark:border-slate-700 dark:text-slate-400">
@@ -413,31 +424,224 @@ function StaffList({ accounts, inactive, isSearching, deactivatingId, onDeactiva
               </td>
 
               <td className="px-4 py-3 text-right">
-                {!inactive && (
+                <div className="flex items-center justify-end gap-2">
                   <button
                     type="button"
-                    onClick={() => onDeactivate(account)}
-                    disabled={deactivatingId === account.id}
-                    className="inline-flex items-center justify-center gap-2 rounded-lg border border-rose-300 px-3 py-2 text-xs font-bold text-rose-800 hover:bg-rose-50 disabled:opacity-50 dark:border-rose-900 dark:text-rose-300 dark:hover:bg-rose-950/40"
+                    onClick={() => onEdit(account)}
+                    disabled={updatingId === account.id || Boolean(deactivatingId)}
+                    className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-300 px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-100 disabled:opacity-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
                   >
-                    {deactivatingId === account.id ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <UserX className="h-4 w-4" />
-                    )}
-                    Deactivate
+                    <Pencil className="h-4 w-4" />
+                    Edit
                   </button>
-                )}
-
-                {inactive && (
-                  <span className="text-xs text-slate-400">Inactive account</span>
-                )}
+                  {!inactive && (
+                    <button
+                      type="button"
+                      onClick={() => onDeactivate(account)}
+                      disabled={deactivatingId === account.id || Boolean(updatingId)}
+                      className="inline-flex items-center justify-center gap-2 rounded-lg border border-rose-300 px-3 py-2 text-xs font-bold text-rose-800 hover:bg-rose-50 disabled:opacity-50 dark:border-rose-900 dark:text-rose-300 dark:hover:bg-rose-950/40"
+                    >
+                      {deactivatingId === account.id ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <UserX className="h-4 w-4" />
+                      )}
+                      Deactivate
+                    </button>
+                  )}
+                </div>
               </td>
             </tr>
           ))}
         </tbody>
       </table>
     </div>
+  );
+}
+
+function StaffEditModal({ account, sections, onClose, onSave, isSaving, errorMessage }) {
+  const availableSections = getLatestSections(sections);
+  const availableSectionIds = new Set(availableSections.map((section) => String(section.id)));
+  const linkedSectionIds = (account.staff_section_assignments || [])
+    .filter((assignment) => (assignment.school_sections || assignment.sections)
+      && availableSectionIds.has(String(assignment.section_id)))
+    .map((assignment) => String(assignment.section_id));
+  const savedSectionLabels = getStaffSections(account).map((label) => label.toLowerCase());
+  const exactSectionIds = availableSections
+    .filter((section) => savedSectionLabels.includes(getSectionLabel(section).toLowerCase()))
+    .map((section) => String(section.id));
+  const initialSectionIds = linkedSectionIds.length
+    ? linkedSectionIds
+    : exactSectionIds.length
+      ? exactSectionIds
+      : account.role === 'adviser'
+        ? []
+        : getRoleSectionIds(account, availableSections);
+
+  const [role, setRole] = useState(account.role);
+  const [sectionIds, setSectionIds] = useState(initialSectionIds);
+  const [assignedScope, setAssignedScope] = useState(account.assigned_section || '');
+  const [sectionSearch, setSectionSearch] = useState('');
+  const [formError, setFormError] = useState('');
+  const requiresSections = SECTION_ROLES.has(role);
+  const normalizedSectionSearch = sectionSearch.trim().toLowerCase();
+  const filteredSections = availableSections.filter((section) => (
+    getSectionLabel(section).toLowerCase().includes(normalizedSectionSearch)
+  ));
+  const visibleSectionIds = filteredSections.map((section) => String(section.id));
+  const allVisibleSelected = visibleSectionIds.length > 0
+    && visibleSectionIds.every((id) => sectionIds.includes(id));
+
+  const toggleSection = (sectionId, checked) => {
+    setSectionIds((current) => (checked
+      ? (current.includes(sectionId) ? current : [...current, sectionId])
+      : current.filter((id) => id !== sectionId)));
+  };
+
+  const toggleAllVisibleSections = () => {
+    setSectionIds((current) => (allVisibleSelected
+      ? current.filter((id) => !visibleSectionIds.includes(id))
+      : [...new Set([...current, ...visibleSectionIds])]));
+  };
+
+  const handleSubmit = async (event) => {
+    event.preventDefault();
+    setFormError('');
+    if (requiresSections && sectionIds.length === 0) {
+      setFormError('Choose at least one current section for this position.');
+      return;
+    }
+    if (!requiresSections && assignedScope.trim().length > 150) {
+      setFormError('Assigned scope must be 150 characters or fewer.');
+      return;
+    }
+    await onSave({
+      profileId: account.id,
+      role,
+      sectionIds: requiresSections ? sectionIds : [],
+      assignedScope: assignedScope.trim(),
+    });
+  };
+
+  return (
+    <Modal
+      isOpen
+      onClose={isSaving ? () => {} : onClose}
+      title={`Edit staff details: ${account.name}`}
+      maxWidth="max-w-3xl"
+    >
+      <form onSubmit={handleSubmit} className="space-y-5">
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div>
+            <p className="text-xs font-bold uppercase tracking-wide text-slate-500">Staff member</p>
+            <p className="mt-1 font-semibold text-slate-900 dark:text-white">{account.name}</p>
+          </div>
+          <div>
+            <p className="text-xs font-bold uppercase tracking-wide text-slate-500">Email</p>
+            <p className="mt-1 break-all text-slate-700 dark:text-slate-300">{account.email}</p>
+          </div>
+        </div>
+
+        <label className="block text-sm font-bold text-slate-700 dark:text-slate-200">
+          Position
+          <select
+            value={role}
+            onChange={(event) => setRole(event.target.value)}
+            className={INPUT_CLASS}
+          >
+            {STAFF_ROLES.map((staffRole) => (
+              <option key={staffRole.value} value={staffRole.value}>{staffRole.label}</option>
+            ))}
+          </select>
+        </label>
+
+        {requiresSections ? (
+          <fieldset className="rounded-lg border border-slate-300 p-3 dark:border-slate-700">
+            <legend className="px-1 text-sm font-bold text-slate-700 dark:text-slate-200">
+              Assigned sections
+            </legend>
+            <p className="mb-3 text-xs font-normal text-slate-500">
+              Select one or more current sections. The section assignment saved on the profile is shown for reference:
+              {' '}{account.assigned_section || 'none'}.
+            </p>
+            <div className="mb-2 flex flex-wrap items-center gap-2">
+              <input
+                type="search"
+                value={sectionSearch}
+                onChange={(event) => setSectionSearch(event.target.value)}
+                placeholder="Filter sections..."
+                aria-label="Filter sections for staff assignment"
+                className="min-w-0 flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-blue-500 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+              />
+              <button
+                type="button"
+                onClick={toggleAllVisibleSections}
+                className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
+              >
+                {allVisibleSelected ? 'Clear visible' : 'Select visible'}
+              </button>
+            </div>
+            <div className="max-h-56 overflow-y-auto rounded-lg border border-slate-200 p-2 dark:border-slate-700">
+              {filteredSections.length ? filteredSections.map((section) => {
+                const id = String(section.id);
+                return (
+                  <label key={id} className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-2 text-sm text-slate-800 hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-800">
+                    <input
+                      type="checkbox"
+                      checked={sectionIds.includes(id)}
+                      onChange={(event) => toggleSection(id, event.target.checked)}
+                      className="h-4 w-4 rounded border-slate-300 text-blue-800 focus:ring-blue-600"
+                    />
+                    <span>{getSectionLabel(section)}</span>
+                  </label>
+                );
+              }) : (
+                <p className="px-2 py-4 text-center text-xs text-slate-500">No matching sections found.</p>
+              )}
+            </div>
+          </fieldset>
+        ) : (
+          <label className="block text-sm font-bold text-slate-700 dark:text-slate-200">
+            Assigned scope / section text
+            <input
+              maxLength={150}
+              value={assignedScope}
+              onChange={(event) => setAssignedScope(event.target.value)}
+              className={INPUT_CLASS}
+              placeholder="Optional, e.g. All Sections (Campus-wide)"
+            />
+            <span className="mt-1 block text-xs font-normal text-slate-500">
+              This is descriptive only; this position does not use section assignments.
+            </span>
+          </label>
+        )}
+
+        {(formError || errorMessage) && (
+          <p role="alert" className="rounded-lg border border-rose-300 bg-rose-50 p-3 text-sm text-rose-900 dark:border-rose-800 dark:bg-rose-950/30 dark:text-rose-200">
+            {formError || errorMessage}
+          </p>
+        )}
+
+        <div className="flex flex-col-reverse gap-2 border-t border-slate-200 pt-4 dark:border-slate-800 sm:flex-row sm:justify-end">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={isSaving}
+            className="rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-bold text-slate-700 hover:bg-slate-100 disabled:opacity-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            disabled={isSaving}
+            className="inline-flex items-center justify-center gap-2 rounded-lg bg-blue-900 px-4 py-2.5 text-sm font-bold text-white hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {isSaving && <Loader2 className="h-4 w-4 animate-spin" />}
+            {isSaving ? 'Saving changes…' : 'Save changes'}
+          </button>
+        </div>
+      </form>
+    </Modal>
   );
 }
 
@@ -467,10 +671,15 @@ export default function SuperAdminPage() {
   const [sectionIds, setSectionIds] = useState([]);
   const [sectionSearch, setSectionSearch] = useState('');
   const [isSaving, setIsSaving] = useState(false);
+  const [isRestoringLegacyStaff, setIsRestoringLegacyStaff] = useState(false);
+  const [editingStaff, setEditingStaff] = useState(null);
+  const [isUpdatingStaff, setIsUpdatingStaff] = useState(false);
+  const [staffEditError, setStaffEditError] = useState('');
 
   // Feedback
   const [errorMessage, setErrorMessage] = useState('');
   const [auditWarning, setAuditWarning] = useState('');
+  const [restoreFeedback, setRestoreFeedback] = useState('');
   const [createdCredentials, setCreatedCredentials] = useState(null);
   const [credentialsCopied, setCredentialsCopied] = useState(false);
   const [bulkPlan, setBulkPlan] = useState(null);
@@ -535,6 +744,50 @@ export default function SuperAdminPage() {
   const handleUsernameChange = (value) => {
     setUsernameTouched(true);
     setUsername(value.toLowerCase().replace(/\s/g, ''));
+  };
+
+  const handleRestoreLegacyStaff = async () => {
+    const accounts = INITIAL_USERS
+      .filter((user) => ['adviser', 'ministrong_tagasubaybay', 'osd'].includes(user.role))
+      .map(({ name, email, role, assigned_section }) => ({ name, email, role, assigned_section }));
+    if (!accounts.length) {
+      setErrorMessage('No known legacy staff identities are available to restore.');
+      return;
+    }
+
+    const confirmation = [
+      `Check ${accounts.length} known OSD, Ministrong Tagasubaybay, and adviser identities against existing Supabase Auth logins.`,
+      'Only exact email matches without an existing profile will be restored; no new login will be created.',
+      'Restored profiles will be active and must change their password at next sign-in.',
+      'Proceed?',
+    ].join('\n\n');
+    if (!window.confirm(confirmation)) return;
+
+    setIsRestoringLegacyStaff(true);
+    setErrorMessage('');
+    setAuditWarning('');
+    setRestoreFeedback('');
+    try {
+      const { data, error } = await supabase.functions.invoke('manage-staff', {
+        body: { action: 'restore_seed_profiles', emails: accounts.map((account) => account.email) },
+      });
+      if (error) {
+        setErrorMessage(`Could not restore legacy staff profiles: ${await getInvocationErrorMessage(error)}`);
+        return;
+      }
+
+      setRestoreFeedback(
+        `Restored ${data?.restored_count || 0} profile(s); `
+        + `${data?.existing_profile_count || 0} already had profiles; `
+        + `${data?.unmatched_auth_count || 0} known identity/identities had no matching Auth login.`,
+      );
+      setAuditWarning(data?.auditWarning || '');
+      await loadDirectory();
+    } catch (error) {
+      setErrorMessage(`Could not restore legacy staff profiles: ${error.message || 'The request could not be completed.'}`);
+    } finally {
+      setIsRestoringLegacyStaff(false);
+    }
   };
 
   const handleRoleChange = (value) => {
@@ -856,6 +1109,39 @@ export default function SuperAdminPage() {
     await loadDirectory();
   };
 
+  const openStaffEditor = (account) => {
+    setStaffEditError('');
+    setEditingStaff(account);
+  };
+
+  const handleUpdateStaff = async ({ profileId, role: updatedRole, sectionIds: updatedSectionIds, assignedScope }) => {
+    setIsUpdatingStaff(true);
+    setStaffEditError('');
+    try {
+      const { data, error } = await supabase.functions.invoke('manage-staff', {
+        body: {
+          action: 'update',
+          profileId,
+          role: updatedRole,
+          sectionIds: updatedSectionIds,
+          assignedScope,
+        },
+      });
+      if (error) {
+        setStaffEditError(`Could not update staff details: ${await getInvocationErrorMessage(error)}`);
+        return;
+      }
+
+      setAuditWarning(data?.auditWarning || '');
+      setEditingStaff(null);
+      await loadDirectory();
+    } catch (error) {
+      setStaffEditError(`Could not update staff details: ${error.message || 'The request could not be completed.'}`);
+    } finally {
+      setIsUpdatingStaff(false);
+    }
+  };
+
   /* ---- Render ---- */
 
   return (
@@ -1111,7 +1397,16 @@ export default function SuperAdminPage() {
                     Search staff by name, username, email, position, or assigned section.
                   </p>
                 </div>
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => { void handleRestoreLegacyStaff(); }}
+                    disabled={isRestoringLegacyStaff || isLoading || isSaving || Boolean(bulkProgress)}
+                    className="inline-flex items-center justify-center gap-2 rounded-lg border border-amber-400 px-3 py-2 text-sm font-bold text-amber-900 hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-amber-800 dark:text-amber-200 dark:hover:bg-amber-950/40"
+                  >
+                    {isRestoringLegacyStaff ? <Loader2 className="h-4 w-4 animate-spin" /> : <UserPlus className="h-4 w-4" />}
+                    {isRestoringLegacyStaff ? 'Restoring legacy staff…' : 'Restore legacy staff'}
+                  </button>
                   <div className="relative min-w-0 flex-1 sm:w-72">
                     <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
                     <input
@@ -1135,6 +1430,14 @@ export default function SuperAdminPage() {
                   </button>
                 </div>
               </div>
+              <p className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+                Restores only known OSD, Ministrong Tagasubaybay, and adviser entries whose email exactly matches an existing Auth login. New profiles are active and require a password change; unmatched logins are not modified.
+              </p>
+              {restoreFeedback && (
+                <p role="status" className="mb-4 rounded-lg border border-emerald-300 bg-emerald-50 p-3 text-sm text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-200">
+                  {restoreFeedback}
+                </p>
+              )}
 
               <div className="mb-2 flex items-center justify-between">
                 <h3 className="text-base font-extrabold text-slate-900 dark:text-white">Active staff</h3>
@@ -1152,6 +1455,8 @@ export default function SuperAdminPage() {
                   inactive={false}
                   isSearching={Boolean(normalizedStaffSearch)}
                   deactivatingId={deactivatingId}
+                  updatingId={isUpdatingStaff ? editingStaff?.id : null}
+                  onEdit={openStaffEditor}
                   onDeactivate={setPendingDeactivation}
                 />
               )}
@@ -1175,6 +1480,8 @@ export default function SuperAdminPage() {
                   inactive
                   isSearching={Boolean(normalizedStaffSearch)}
                   deactivatingId={deactivatingId}
+                  updatingId={isUpdatingStaff ? editingStaff?.id : null}
+                  onEdit={openStaffEditor}
                   onDeactivate={setPendingDeactivation}
                 />
               )}
@@ -1185,6 +1492,21 @@ export default function SuperAdminPage() {
         {activePanel === 'students' && <EtlManagementPage />}
         {activePanel === 'history' && <SuperAdminActivityHistory />}
       </div>
+
+      {editingStaff && (
+        <StaffEditModal
+          key={editingStaff.id}
+          account={editingStaff}
+          sections={sections}
+          onClose={() => {
+            setEditingStaff(null);
+            setStaffEditError('');
+          }}
+          onSave={handleUpdateStaff}
+          isSaving={isUpdatingStaff}
+          errorMessage={staffEditError}
+        />
+      )}
 
       <ConfirmDialog
         isOpen={Boolean(pendingDeactivation)}

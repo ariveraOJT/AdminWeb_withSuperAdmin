@@ -1,9 +1,16 @@
-import React, { useState, useMemo } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useIncidents } from '../context/IncidentContext';
-import { searchStudents } from '../utils/searchUtils';
+import { supabase } from '../lib/supabaseClient';
 import ProfileAvatar from '../components/common/ProfileAvatar';
-import { Users, Search, AlertTriangle, Phone, Eye, ArrowRight, UserCheck, ChevronLeft, ChevronRight, School } from 'lucide-react';
+import {
+  Users, Search, AlertTriangle, ArrowRight, ChevronLeft, ChevronRight, School, Loader2, RefreshCw,
+} from 'lucide-react';
+
+const getSectionKey = (section) => JSON.stringify([section.grade, section.section_name]);
+
+const naturalCompare = (a, b) =>
+  String(a || '').localeCompare(String(b || ''), undefined, { numeric: true, sensitivity: 'base' });
 
 export default function StudentsPage({ onSelectStudent }) {
   const { isMinistro } = useAuth();
@@ -12,24 +19,74 @@ export default function StudentsPage({ onSelectStudent }) {
   const [gradeFilter, setGradeFilter] = useState('ALL');
   const [sectionFilter, setSectionFilter] = useState('ALL');
   const [currentPage, setCurrentPage] = useState(1);
+  const [schoolSections, setSchoolSections] = useState([]);
+  const [isLoadingSections, setIsLoadingSections] = useState(true);
+  const [sectionsError, setSectionsError] = useState('');
   const itemsPerPage = 12;
 
-  const grades = ['Grade 7', 'Grade 8', 'Grade 9', 'Grade 10', 'Grade 11', 'Grade 12'];
-  const allSectionsList = [
-    'Grade 7 - Mahogany',
-    'Grade 7 - Narra',
-    'Grade 8 - Uranus',
-    'Grade 8 - Venus',
-    'Grade 9 - Eagle',
-    'Grade 9 - Falcon',
-    'Grade 10 - Rizal',
-    'Grade 10 - Bonifacio',
-    'Grade 10 - Jupiter',
-    'Grade 11 - STEM A',
-    'Grade 11 - ABM A',
-    'Grade 12 - STEM A',
-    'Grade 12 - ABM A'
-  ];
+  const loadSchoolSections = useCallback(async () => {
+    try {
+      const { data, error } = await supabase
+        .from('school_sections')
+        .select('grade, section_name, academic_year')
+        .order('grade')
+        .order('section_name');
+      if (error) throw new Error(error.message);
+
+      const rows = data || [];
+      const academicYears = [...new Set(rows.map((section) => section.academic_year).filter(Boolean))].sort();
+      const currentAcademicYear = academicYears[academicYears.length - 1];
+      const currentSections = rows
+        .filter((section) => !currentAcademicYear || section.academic_year === currentAcademicYear)
+        .reduce((uniqueSections, section) => {
+          const key = getSectionKey(section);
+          if (!uniqueSections.has(key)) uniqueSections.set(key, section);
+          return uniqueSections;
+        }, new Map())
+        .values();
+      const nextSections = [...currentSections].sort(
+  (a, b) => naturalCompare(a.grade, b.grade) || naturalCompare(a.section_name, b.section_name)
+);
+
+      setSchoolSections(nextSections);
+      setSectionFilter((current) => (
+        current === 'ALL' || nextSections.some((section) => getSectionKey(section) === current)
+          ? current
+          : 'ALL'
+      ));
+      setGradeFilter((current) => (
+        current === 'ALL' || nextSections.some((section) => section.grade === current)
+          ? current
+          : 'ALL'
+      ));
+      setCurrentPage(1);
+      setSectionsError('');
+    } catch (error) {
+      setSectionsError(`Could not load section filters from school sections: ${error.message || 'The request failed.'}`);
+    } finally {
+      setIsLoadingSections(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadSchoolSections();
+    const handleRosterUpdated = () => {
+      setIsLoadingSections(true);
+      void loadSchoolSections();
+    };
+    window.addEventListener('hayagsync:roster-updated', handleRosterUpdated);
+    return () => window.removeEventListener('hayagsync:roster-updated', handleRosterUpdated);
+  }, [loadSchoolSections]);
+
+  const grades = useMemo(
+    () => [...new Set(schoolSections.map((section) => section.grade))],
+    [schoolSections],
+  );
+  const availableSections = useMemo(
+    () => schoolSections.filter((section) => gradeFilter === 'ALL' || section.grade === gradeFilter),
+    [schoolSections, gradeFilter],
+  );
+  const selectedSection = schoolSections.find((section) => getSectionKey(section) === sectionFilter);
 
   const filteredStudents = useMemo(() => {
     let result = students;
@@ -48,12 +105,17 @@ export default function StudentsPage({ onSelectStudent }) {
       result = result.filter((s) => s.grade === gradeFilter);
     }
 
-    if (sectionFilter !== 'ALL') {
-      result = result.filter((s) => s.section === sectionFilter);
+    if (sectionFilter !== 'ALL' && selectedSection) {
+      const fullSectionName = `${selectedSection.grade} - ${selectedSection.section_name}`;
+      result = result.filter((student) => (
+        student.grade === selectedSection.grade
+        && [student.section, `${student.grade} - ${student.section}`]
+          .some((value) => value === selectedSection.section_name || value === fullSectionName)
+      ));
     }
 
     return result;
-  }, [students, searchQuery, gradeFilter, sectionFilter]);
+  }, [students, searchQuery, gradeFilter, sectionFilter, selectedSection]);
 
   const totalPages = Math.ceil(filteredStudents.length / itemsPerPage) || 1;
   const paginatedStudents = useMemo(() => {
@@ -109,8 +171,10 @@ export default function StudentsPage({ onSelectStudent }) {
               value={gradeFilter}
               onChange={(e) => {
                 setGradeFilter(e.target.value);
+                setSectionFilter('ALL');
                 setCurrentPage(1);
               }}
+              disabled={isLoadingSections || grades.length === 0}
               className="px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg font-medium focus:ring-2 focus:ring-blue-900 text-slate-900 dark:text-white text-sm"
             >
               <option value="ALL">All Grade Levels</option>
@@ -121,7 +185,6 @@ export default function StudentsPage({ onSelectStudent }) {
               ))}
             </select>
           </div>
-
           <div>
             <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
               Filter Section
@@ -132,17 +195,38 @@ export default function StudentsPage({ onSelectStudent }) {
                 setSectionFilter(e.target.value);
                 setCurrentPage(1);
               }}
+              disabled={isLoadingSections || schoolSections.length === 0}
               className="px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg font-medium focus:ring-2 focus:ring-blue-900 text-slate-900 dark:text-white text-sm"
             >
-              <option value="ALL">All Sections (13 Active)</option>
-              {allSectionsList.map((sec) => (
-                <option key={sec} value={sec}>
-                  {sec}
+              <option value="ALL">All Sections</option>
+              {availableSections.map((section) => (
+                <option key={getSectionKey(section)} value={getSectionKey(section)}>
+                  {section.grade} - {section.section_name}
                 </option>
               ))}
             </select>
           </div>
+          <button
+            type="button"
+            onClick={() => {
+              setIsLoadingSections(true);
+              void loadSchoolSections();
+            }}
+            disabled={isLoadingSections}
+            aria-label="Refresh section filters"
+            title="Refresh section filters"
+            className="mt-5 inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-100 disabled:opacity-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
+          >
+            {isLoadingSections
+              ? <Loader2 className="h-4 w-4 animate-spin" />
+              : <RefreshCw className="h-4 w-4" />}
+          </button>
         </div>
+        {sectionsError && (
+          <p role="alert" className="mt-3 rounded-lg border border-rose-300 bg-rose-50 p-3 text-sm text-rose-900 dark:border-rose-800 dark:bg-rose-950/30 dark:text-rose-200">
+            {sectionsError}
+          </p>
+        )}
       </div>
 
       {/* Students Cards Grid */}
